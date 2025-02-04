@@ -3,6 +3,7 @@
 /Kokoro/demo
 /Kokoro/__pycache__
 /Kokoro/kokoro-v0_19.pth
+/Kokoro/kokoro-v0_19.onnx
 machine-config.json
 
 *.pyc
