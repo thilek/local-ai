@@ -2,34 +2,6 @@ version: '3.8'
 
 services:
   ##########################
-  # AnythingLLM Service
-  ##########################
-  # anything-llm:
-  #   image: mintplexlabs/anythingllm:latest
-  #   container_name: anythingllm
-  #   cap_add:
-  #     - SYS_ADMIN
-  #   restart: unless-stopped
-  #   ports:
-  #     - "3001:3001"   # Web UI accessible at http://localhost:3001
-  #     - "8001:8001"   # Internal API
-  #   volumes:
-  #     - ./data/anythingllm/uploads:/app/uploads  # Documents storage
-  #     - ./data/anythingllm/db:/app/db           # Default DB storage
-  #     - ./data/anythingllm/storage:/app/server/storage
-  #     - ./data/anythingllm/collector/hotdir/:/app/collector/hotdir
-  #     - ./data/anythingllm/collector/outputs/:/app/collector/outputs
-  #   environment:
-  #     STORAGE_DIR: "/app/server/storage"
-  #     LLM_PROVIDER: "ollama"        # 'openai' if you have a valid key
-  #     OLLAMA_BASE_PATH: "http://ollama:11434"
-  #     OLLAMA_MODEL_PREF: 'llama3.2'
-  #     EMBEDDING_PROVIDER: "local"
-  #     VECTOR_DB: "lancedb"
-  #     WHISPER_PROVIDER: "local"
-  #    SERVER_PORT: 3001
-
-  ##########################
   # Ollama WebUI Service
   ##########################
   ollama-webui:
@@ -58,12 +30,13 @@ services:
       - KOKORO_API_KEY=not-needed  # Replace with actual API key if required
       - SERVICE_HOST=kokoro-tts
       - ESPEAK_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/libespeak-ng.so.1
-   #  - ESPEAK_LIBRARY_PATH=/opt/homebrew/Cellar/espeak-ng/1.52.0/lib/libespeak-ng.1.dylib
+      # - ESPEAK_LIBRARY_PATH=/opt/homebrew/Cellar/espeak-ng/1.52.0/lib/libespeak-ng.1.dylib
     volumes:
       - ./Kokoro/tts_outputs:/app/tts_outputs
       - ./Kokoro/voices:/app/voices
-  
     networks:
-    default:
-      name: my_network
-      driver: bridge
+      - my_network
+
+networks:
+  my_network:
+    driver: bridge
