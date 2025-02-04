@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Header, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 import torch
 import soundfile as sf
@@ -17,6 +17,7 @@ DEFAULT_VOICE = "af_sky"
 SAMPLE_RATE = 24000
 OUTPUT_DIR = "/app/tts_outputs"
 PYTORCH_MODEL_PATH = "kokoro-v0_19.pth"
+ONNX_MODEL_PATH = "kokoro-v0_19.onnx"
 VOICE_DIR = "voices"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 API_KEY = os.getenv("KOKORO_API_KEY", "not-needed")
@@ -99,91 +100,47 @@ async def synthesize_tts(
         logging.error(f"Error loading voice pack: {e}")
         raise HTTPException(status_code=500, detail=f"Error loading voice pack: {str(e)}")
 
-    # Helper function for better text splitting
     def split_text(input_text):
         """Split input text into meaningful chunks."""
         return sent_tokenize(input_text)
     
-    # Generate TTS audio
     def audio_stream_generator():
         """Generator function to yield audio chunks."""
         total_chunks = 0
         try:
             for chunk in split_text(request.input):
                 if len(chunk.strip()) < 2:
-                    logging.debug(f"Skipping empty or short chunk: {chunk}")
                     continue
-
                 logging.debug(f"Processing chunk: {chunk}")
                 total_chunks += 1
-
                 try:
-                    # Generate audio for the chunk
                     snippet, _ = generate(MODEL, chunk, voicepack, lang=voice_name[0], speed=request.speed)
-
                     if snippet is not None:
-                        # Convert the snippet to a list if needed
                         snippet = snippet.tolist() if hasattr(snippet, "tolist") else snippet
-
-                        # Write audio chunk to buffer and yield it
                         audio_bytes = BytesIO()
                         sf.write(audio_bytes, snippet, SAMPLE_RATE, format=request.response_format.upper())
                         audio_bytes.seek(0)
-                        chunk_data = audio_bytes.read()
-                        logging.debug(f"Generated chunk of size: {len(chunk_data)} bytes")
-                        yield chunk_data
-                        time.sleep(0.1)  # Add a small delay to prevent skipping
+                        yield audio_bytes.read()
+                        time.sleep(0.2)
                     else:
                         logging.warning(f"No audio generated for chunk: {chunk}")
-
                 except Exception as e:
                     logging.warning(f"Failed to process chunk: {chunk}. Error: {e}")
-
         except Exception as e:
             logging.error(f"Error in audio_stream_generator: {e}")
-            yield b""
         finally:
             logging.debug(f"Total chunks processed: {total_chunks}")
+            yield b""
 
     if request.stream:
-        # Streaming response
-        try:
-            logging.debug("Streaming audio...")
-            return StreamingResponse(
-                audio_stream_generator(),
-                media_type="audio/wav",
-                headers={"Transfer-Encoding": "chunked"}
-            )
-        except Exception as e:
-            logging.error(f"Error streaming audio: {e}")
-            raise HTTPException(status_code=500, detail=f"Error streaming audio: {str(e)}")
+        return StreamingResponse(
+            audio_stream_generator(),
+            media_type="audio/wav",
+            headers={"Transfer-Encoding": "chunked", "Connection": "keep-alive"}
+        )
     else:
-        # Save audio to a file
-        output_file = os.path.join(OUTPUT_DIR, f"{uuid.uuid4()}.{request.response_format}")
-        logging.debug(f"Saving audio to {output_file}")
-        try:
-            audio = []
-            for chunk in split_text(request.input):
-                if len(chunk.strip()) < 2:
-                    continue  # Skip empty or invalid chunks
-
-                snippet, _ = generate(MODEL, chunk, voicepack, lang=voice_name[0], speed=request.speed)
-                if snippet is not None:
-                    snippet = snippet.tolist() if hasattr(snippet, "tolist") else snippet
-                    audio.extend(snippet)
-
-            if not audio:
-                raise ValueError("No audio data generated.")
-
-            sf.write(output_file, audio, SAMPLE_RATE, format=request.response_format.upper())
-            logging.debug(f"Audio saved successfully at {output_file}")
-        except Exception as e:
-            logging.error(f"Error saving audio: {e}")
-            raise HTTPException(status_code=500, detail=f"Error saving audio: {str(e)}")
-
-        return {
-            "audio_url": f"http://{HOST}:8880/audio/{os.path.basename(output_file)}"
-        }
+        response_audio = b''.join(audio_stream_generator())
+        return Response(content=response_audio, media_type="audio/wav")
 
 @app.get("/audio/{file_name}")
 def get_audio(file_name: str):

@@ -2,7 +2,6 @@
 /Kokoro/tts_outputs
 /Kokoro/demo
 /Kokoro/__pycache__
-/Kokoro/kokoro-v0_19.onnx
 /Kokoro/kokoro-v0_19.pth
 machine-config.json
 
