@@ -9,7 +9,7 @@ import os
 import uuid
 import logging
 from io import BytesIO
-from nltk.tokenize import sent_tokenize  # Added for improved text splitting
+import re
 import time
 
 # Configuration
@@ -44,6 +44,31 @@ class TTSRequest(BaseModel):
     speed: float = 1.0
     stream: bool = True  # Default to True
 
+# Custom Sentence Splitter (Preserves Dialogues & Limits Length)
+def split_text(input_text, max_length=150):
+    """
+    Custom sentence splitter that preserves dialogues and ensures sentence integrity.
+    Limits chunk size to prevent TTS model errors.
+    """
+    text = re.sub(r"([.!?])([A-Z])", r"\1 \2", input_text)  # Ensure proper sentence spacing
+    sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!|")\s', text)
+
+    # Ensure each chunk is within max_length
+    result = []
+    current_chunk = ""
+
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) < max_length:
+            current_chunk += " " + sentence
+        else:
+            result.append(current_chunk.strip())
+            current_chunk = sentence
+
+    if current_chunk:
+        result.append(current_chunk.strip())
+
+    return result
+
 @app.post("/v1/audio/speech")
 async def synthesize_tts(
     request: TTSRequest,
@@ -52,15 +77,6 @@ async def synthesize_tts(
 ):
     logging.debug(f"Request received: {request.dict()}")
     logging.debug(f"Authorization Header: {authorization}")
-
-    # Log full incoming request (headers and body)
-    headers = dict(fastapi_request.headers)
-    logging.debug(f"Request Headers: {headers}")
-    try:
-        body = await fastapi_request.body()
-        logging.debug(f"Request Body: {body.decode('utf-8')}")
-    except Exception as e:
-        logging.error(f"Error reading request body: {e}")
 
     # Validate API key
     if API_KEY != "not-needed" and authorization != f"Bearer {API_KEY}":
@@ -100,36 +116,47 @@ async def synthesize_tts(
         logging.error(f"Error loading voice pack: {e}")
         raise HTTPException(status_code=500, detail=f"Error loading voice pack: {str(e)}")
 
-    def split_text(input_text):
-        """Split input text into meaningful chunks."""
-        return sent_tokenize(input_text)
-    
     def audio_stream_generator():
-        """Generator function to yield audio chunks."""
         total_chunks = 0
+        failed_chunks = []
+
         try:
             for chunk in split_text(request.input):
                 if len(chunk.strip()) < 2:
                     continue
-                logging.debug(f"Processing chunk: {chunk}")
+
+                attempt = 0
+                max_attempts = 3
+                snippet = None
+
+                while attempt < max_attempts:
+                    try:
+                        snippet, _ = generate(MODEL, chunk, voicepack, lang=voice_name[0], speed=request.speed)
+                        if snippet is not None:
+                            break
+                    except Exception as e:
+                        logging.warning(f"⚠️ Attempt {attempt + 1} failed for chunk: {chunk}. Error: {e}")
+                    
+                    attempt += 1
+
+                if snippet is None:
+                    logging.warning(f"Skipping chunk after {max_attempts} failed attempts: {chunk}")
+                    failed_chunks.append(chunk)
+                    continue
+
                 total_chunks += 1
-                try:
-                    snippet, _ = generate(MODEL, chunk, voicepack, lang=voice_name[0], speed=request.speed)
-                    if snippet is not None:
-                        snippet = snippet.tolist() if hasattr(snippet, "tolist") else snippet
-                        audio_bytes = BytesIO()
-                        sf.write(audio_bytes, snippet, SAMPLE_RATE, format=request.response_format.upper())
-                        audio_bytes.seek(0)
-                        yield audio_bytes.read()
-                        time.sleep(0.2)
-                    else:
-                        logging.warning(f"No audio generated for chunk: {chunk}")
-                except Exception as e:
-                    logging.warning(f"Failed to process chunk: {chunk}. Error: {e}")
+                audio_bytes = BytesIO()
+                sf.write(audio_bytes, snippet, SAMPLE_RATE, format=request.response_format.upper())
+                audio_bytes.seek(0)
+                yield audio_bytes.read()
+                time.sleep(0.2)
+
         except Exception as e:
-            logging.error(f"Error in audio_stream_generator: {e}")
+            logging.error(f"Critical error in audio_stream_generator: {e}")
         finally:
             logging.debug(f"Total chunks processed: {total_chunks}")
+            if failed_chunks:
+                logging.error(f"The following chunks were skipped: {failed_chunks}")
             yield b""
 
     if request.stream:
@@ -140,6 +167,9 @@ async def synthesize_tts(
         )
     else:
         response_audio = b''.join(audio_stream_generator())
+        if not response_audio:
+            logging.error("No audio generated for the entire text. Check chunking or TTS model errors.")
+            raise HTTPException(status_code=500, detail="TTS generation failed.")
         return Response(content=response_audio, media_type="audio/wav")
 
 @app.get("/audio/{file_name}")
